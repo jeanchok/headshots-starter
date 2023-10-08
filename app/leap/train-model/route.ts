@@ -47,11 +47,12 @@ export async function POST(request: Request) {
   }
 
   console.log({ stripeIsConfigured });
-  if (stripeIsConfigured) {
+  if (!stripeIsConfigured) {
     const { error: creditError, data: credits } = await supabase
       .from("credits")
       .select("credits")
       .eq("user_id", user.id);
+    console.log("🚀 ~ file: route.ts:55 ~ POST ~ credits:", credits)
 
     if (creditError) {
       console.error({ creditError });
@@ -148,6 +149,7 @@ export async function POST(request: Request) {
       `https://api.tryleap.ai/api/v2/images/models/new`,
       options
     );
+    console.log("🚀 ~ file: route.ts:152 ~ POST ~ resp:", resp)
 
     const { status, statusText } = resp;
     const body = (await resp.json()) as {
