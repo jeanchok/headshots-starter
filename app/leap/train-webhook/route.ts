@@ -1,3 +1,4 @@
+import { LeapWebhookImage } from "@/types/leap";
 import { Database } from "@/types/supabase";
 import { Leap } from "@leap-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
@@ -10,19 +11,14 @@ const resendApiKey = process.env.RESEND_API_KEY;
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const leapApiKey = process.env.LEAP_API_KEY;
-const leapImageWebhookUrl = process.env.LEAP_IMAGE_WEBHOOK_URL;
+// For local development, recommend using an Ngrok tunnel for the domain
 const leapWebhookSecret = process.env.LEAP_WEBHOOK_SECRET;
 const stripeIsConfigured = process.env.NEXT_PUBLIC_STRIPE_IS_ENABLED === "true";
 
-const prompts = [
-  "8k close up linkedin profile picture of @subject {model_type}, professional jack suite, professional headshots, photo-realistic, 4k, high-resolution image, workplace settings, upper body, modern outfit, professional suit, business, blurred background, glass building, office window",
-  "8k close up linkedin profile picture of @subject {model_type}, linkedin, professional jack suit, professional headshots, photo-realistic, 4k, high-resolution image, workplace settings, upper body, modern outfit, professional suit, business, blurred background, glass building, garden, bokeh",
-  "8k linkedin professional profile photo of @subject {model_type} in a suit with studio lighting, bokeh, corporate portrait headshot photograph best corporate photography photo winner, meticulous detail, hyperrealistic, centered uncropped symmetrical beautiful",
-  "8k professional headshot of @subject {model_type}, crisp details, studio backdrop, executive attire, confident posture, neutral expression, high-definition, corporate setting, sharp focus, ambient lighting, business professional, cityscape view",
-];
-
 if (!resendApiKey) {
-  console.warn("We detected that the RESEND_API_KEY is missing from your environment variables. The app should still work but email notifications will not be sent. Please add your RESEND_API_KEY to your environment variables if you want to enable email notifications.");
+  console.warn(
+    "We detected that the RESEND_API_KEY is missing from your environment variables. The app should still work but email notifications will not be sent. Please add your RESEND_API_KEY to your environment variables if you want to enable email notifications."
+  );
 }
 
 if (!supabaseUrl) {
@@ -33,17 +29,20 @@ if (!supabaseServiceRoleKey) {
   throw new Error("MISSING SUPABASE_SERVICE_ROLE_KEY!");
 }
 
-if (!leapImageWebhookUrl) {
-  throw new Error("MISSING LEAP_IMAGE_WEBHOOK_URL!");
-}
-
 if (!leapWebhookSecret) {
   throw new Error("MISSING LEAP_WEBHOOK_SECRET!");
 }
 
 export async function POST(request: Request) {
   const incomingData = await request.json();
-  const { result } = incomingData;
+  // console.log(incomingData, "train model webhook incomingData");
+
+  const { output } = incomingData;
+  // console.log(output, "train model webhook result");
+
+  const workflowRunId = incomingData.id;
+  // console.log(workflowRunId, "workflowRunId");
+
   const urlObj = new URL(request.url);
   const user_id = urlObj.searchParams.get("user_id");
   const webhook_secret = urlObj.searchParams.get("webhook_secret");
@@ -56,27 +55,34 @@ export async function POST(request: Request) {
       },
       {
         status: 500,
-        statusText:
-          "Missing API Key: Add your Leap API Key to generate headshots",
       }
     );
   }
 
   if (!webhook_secret) {
     return NextResponse.json(
-      {},
-      { status: 500, statusText: "Malformed URL, no webhook_secret detected!" }
+      {
+        message: "Malformed URL, no webhook_secret detected!",
+      },
+      { status: 500 }
     );
   }
 
   if (webhook_secret.toLowerCase() !== leapWebhookSecret?.toLowerCase()) {
-    return NextResponse.json({}, { status: 401, statusText: "Unauthorized!" });
+    return NextResponse.json(
+      {
+        message: "Unauthorized!",
+      },
+      { status: 401 }
+    );
   }
 
   if (!user_id) {
     return NextResponse.json(
-      {},
-      { status: 500, statusText: "Malformed URL, no user_id detected!" }
+      {
+        message: "Malformed URL, no user_id detected!",
+      },
+      { status: 500 }
     );
   }
 
@@ -98,18 +104,25 @@ export async function POST(request: Request) {
   } = await supabase.auth.admin.getUserById(user_id);
 
   if (error) {
-    return NextResponse.json({}, { status: 401, statusText: error.message });
+    return NextResponse.json(
+      {
+        message: error.message,
+      },
+      { status: 401 }
+    );
   }
 
   if (!user) {
     return NextResponse.json(
-      {},
-      { status: 401, statusText: "User not found!" }
+      {
+        message: "Unauthorized",
+      },
+      { status: 401 }
     );
   }
 
   try {
-    if (result.status === "finished") {
+    if (incomingData.status === "completed") {
       // Send Email
       if (resendApiKey) {
         const resend = new Resend(resendApiKey);
@@ -126,7 +139,7 @@ export async function POST(request: Request) {
         .update({
           status: "finished",
         })
-        .eq("modelId", result.id)
+        .eq("modelId", workflowRunId)
         .select();
 
       if (modelUpdatedError) {
@@ -135,7 +148,7 @@ export async function POST(request: Request) {
           {
             message: "Something went wrong!",
           },
-          { status: 500, statusText: "Something went wrong!" }
+          { status: 500 }
         );
       }
 
@@ -144,29 +157,36 @@ export async function POST(request: Request) {
         console.error({ modelUpdated });
       }
 
-      const leap = new Leap({
-        accessToken: leapApiKey,
-      });
-
-      for (let index = 0; index < prompts.length; index++) {
-        const { status, statusText } = await leap.images.generate({
-          prompt: prompts[index].replace(
-            "{model_type}",
-            (model_type as string) ?? ""
-          ),
-          numberOfImages: 4,
-          height: 512,
-          width: 512,
-          steps: 50,
-          negativePrompt:
-            "(deformed iris, deformed pupils, semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime:1.4), text, close up, cropped, out of frame, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, mutated hands, poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck",
-          modelId: result.id,
-          promptStrength: 7.5,
-          webhookUrl: `${leapImageWebhookUrl}?user_id=${user.id}&model_id=${result.id}&webhook_secret=${leapWebhookSecret}&model_db_id=${modelUpdated[0]?.id}`,
-        });
-
-        console.log({ status, statusText });
+      let allImages = [] as string[];
+      for (let step in output) {
+        if (
+          output[step].hasOwnProperty("images") &&
+          Array.isArray(output[step].images)
+        ) {
+          allImages = allImages.concat(output[step].images);
+        }
       }
+      // console.log(allImages, "allImages");
+
+      const modelId = modelUpdated[0].id;
+
+      await Promise.all(
+        allImages.map(async (image) => {
+          const { error: imageError } = await supabase.from("images").insert({
+            modelId: Number(modelId),
+            uri: image,
+          });
+          if (imageError) {
+            console.error({ imageError });
+          }
+        })
+      );
+      return NextResponse.json(
+        {
+          message: "success",
+        },
+        { status: 200, statusText: "Success" }
+      );
     } else {
       // Send Email
       if (resendApiKey) {
@@ -185,11 +205,15 @@ export async function POST(request: Request) {
         .update({
           status: "failed",
         })
-        .eq("modelId", result.id);
+        .eq("modelId", workflowRunId);
 
       if (stripeIsConfigured) {
         // Refund the user.
-        const { data } = await supabase.from("credits").select("*").eq("user_id", user.id).single();
+        const { data } = await supabase
+          .from("credits")
+          .select("*")
+          .eq("user_id", user.id)
+          .single();
         const credits = data!.credits;
 
         // We are adding a credit back to the user, since we charged them for the model training earlier. Since it failed we need to refund it.
@@ -205,7 +229,7 @@ export async function POST(request: Request) {
             {
               message: "Something went wrong!",
             },
-            { status: 500, statusText: "Something went wrong!" }
+            { status: 500 }
           );
         }
 
@@ -216,7 +240,7 @@ export async function POST(request: Request) {
       {
         message: "success",
       },
-      { status: 200, statusText: "Success" }
+      { status: 200 }
     );
   } catch (e) {
     console.error(e);
@@ -224,7 +248,7 @@ export async function POST(request: Request) {
       {
         message: "Something went wrong!",
       },
-      { status: 500, statusText: "Something went wrong!" }
+      { status: 500 }
     );
   }
 }
